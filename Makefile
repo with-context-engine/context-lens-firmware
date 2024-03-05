@@ -55,22 +55,22 @@ settings-hex-zip:
 		$(BUILD)/settings.hex
 	@echo Settings file built
 
-	@echo Building DFU package...
-	@mergehex \
-	    -m $(BUILD)/settings.hex \
-		   $(BUILD)/application.hex \
-		   source/bootloader/*.hex \
-		   libraries/softdevice/*.hex \
-		-o $(BUILD)/frame-firmware-$(BUILD_VERSION).hex
+	# # @echo Building DFU package...
+	# # @mergehex \
+	# #     -m $(BUILD)/settings.hex \
+	# # 	   $(BUILD)/application.hex \
+	# # 	   source/bootloader/*.hex \
+	# # 	   libraries/softdevice/*.hex \
+	# # 	-o $(BUILD)/frame-firmware-$(BUILD_VERSION).hex
 
-	@nrfutil pkg generate \
-		--hw-version 52 \
-		--application-version 0 \
-		--application $(BUILD)/application.hex \
-		--sd-req 0x0123 \
-		--key-file source/bootloader/dfu_private_key.pem \
-		$(BUILD)/frame-firmware-$(BUILD_VERSION).zip
-	@echo DFU package built
+	# @nrfutil pkg generate \
+	# 	--hw-version 52 \
+	# 	--application-version 0 \
+	# 	--application $(BUILD)/application.hex \
+	# 	--sd-req 0x0123 \
+	# 	--key-file source/bootloader/dfu_private_key.pem \
+	# 	$(BUILD)/frame-firmware-$(BUILD_VERSION).zip
+	# @echo DFU package built
 
 release:
 	@echo Releasing...
