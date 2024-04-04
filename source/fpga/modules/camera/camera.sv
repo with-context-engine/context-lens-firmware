@@ -13,17 +13,26 @@
 `include "modules/camera/crop.sv"
 `include "modules/camera/debayer.sv"
 `include "modules/camera/image_buffer.sv"
+`include "modules/camera/jpeg/jpeg.sv"
 `include "modules/camera/metering.sv"
+`include "modules/camera/spi_registers.sv"
+`endif
+
+`ifdef TESTBENCH
+`include "modules/camera/testbenches/image_gen.sv"
 `endif
 
 module camera (
     input logic global_reset_n_in,
     
-    input logic clock_spi_in, // 72MHz
-    input logic reset_spi_n_in,
+    input logic spi_clock_in, // 72MHz
+    input logic spi_reset_n_in,
 
-    input logic clock_pixel_in, // 36MHz
-    input logic reset_pixel_n_in,
+    input logic pixel_clock_in, // 36MHz
+    input logic pixel_reset_n_in,
+
+    input logic jpeg_buffer_clock_in, // 78MHz
+    input logic jpeg_buffer_reset_n_in,
 
     inout wire mipi_clock_p_in,
     inout wire mipi_clock_n_in,
@@ -39,131 +48,72 @@ module camera (
     output logic response_valid_out
 );
 
-// Registers to hold the current command operations
-logic capture_flag;
-logic capture_in_progress_flag;
+// TODO position signals
+logic start_capture_spi_domain;
+logic [3:0] quality_factor_spi_domain;
 
-// TODO make capture_size dynamic once we have adjustable resolution
-logic [15:0] capture_size = 200 * 200;
-logic [15:0] bytes_read;
+logic start_capture_metastable;
+logic [3:0] quality_factor_metastable;
 
-logic [15:0] bytes_remaining;
-assign bytes_remaining = capture_size - bytes_read;
+logic start_capture_pixel_domain;
+logic [3:0] quality_factor_pixel_domain;
 
-logic [15:0] buffer_read_address;
-logic [7:0] buffer_read_data;
-assign buffer_read_address = bytes_read;
+logic [15:0] bytes_available = 40000; // TODO connect this
+logic [7:0] image_buffer_data;
+logic [15:0] image_buffer_address;
 
-logic [7:0] red_metering;
-logic [7:0] green_metering;
-logic [7:0] blue_metering;
+logic [7:0] red_metering_spi_clock_domain;
+logic [7:0] green_metering_spi_clock_domain;
+logic [7:0] blue_metering_spi_clock_domain;
 
-logic last_op_code_valid_in;
-logic last_operand_valid_in;
+spi_registers spi_registers (
+    .clock_in(spi_clock_in),
+    .reset_n_in(spi_reset_n_in),
 
-// Handle op-codes as they come in
-always_ff @(posedge clock_spi_in) begin
-    
-    if (reset_spi_n_in == 0) begin
-        response_out <= 0;
-        response_valid_out <= 0;
-        capture_flag <= 0;
-        bytes_read <= 0;
-        last_op_code_valid_in <= 0;
-        last_operand_valid_in <= 0;
+    .op_code_in(op_code_in),
+    .op_code_valid_in(op_code_valid_in),
+    .operand_in(operand_in),
+    .operand_valid_in(operand_valid_in),
+    .operand_count_in(operand_count_in),
+    .response_out(response_out),
+    .response_valid_out(response_valid_out),
+
+    .start_capture_out(start_capture_spi_domain),
+    // TODO position signals
+    .quality_factor_out(quality_factor_spi_domain),
+
+    .bytes_available_in(bytes_available),
+    .data_in(image_buffer_data),
+    .bytes_read_out(image_buffer_address),
+
+    .red_metering_in(red_metering_spi_clock_domain),
+    .green_metering_in(green_metering_spi_clock_domain),
+    .blue_metering_in(blue_metering_spi_clock_domain)
+);
+
+always @(posedge pixel_clock_in) begin
+    if (pixel_reset_n_in == 0) begin
+        start_capture_metastable <= 0;
+        quality_factor_metastable <= 0;
+
+        start_capture_pixel_domain <= 0;
+        quality_factor_pixel_domain <= 0;
     end
 
     else begin
+        start_capture_metastable <= start_capture_spi_domain;
+        quality_factor_metastable <= quality_factor_spi_domain;
 
-        last_op_code_valid_in <= op_code_valid_in;
-        last_operand_valid_in <= operand_valid_in;
-
-        // Clear capture flag once it is in process
-        if (capture_in_progress_flag == 1) begin
-            capture_flag <= 0;  
-        end
-        
-        if (op_code_valid_in) begin
-
-            case (op_code_in)
-
-                // Capture
-                'h20: begin
-                    if (capture_in_progress_flag == 0) begin
-                        capture_flag <= 1;
-                        bytes_read <= 0;
-                    end
-                end
-
-                // Bytes available
-                'h21: begin
-                    case (operand_count_in)
-                        0: response_out <= bytes_remaining[15:8];
-                        1: response_out <= bytes_remaining[7:0];
-                    endcase
-
-                    response_valid_out <= 1;
-                end
-
-                // Read data
-                'h22: begin
-                    response_out <= buffer_read_data;
-                    response_valid_out <= 1;
-
-                    if (last_operand_valid_in == 0 && operand_valid_in == 1) begin
-                        bytes_read <= bytes_read + 1;
-                    end
-                end
-
-                // Metering
-                'h25: begin
-                    case (operand_count_in)
-                        0: response_out <= red_metering;
-                        1: response_out <= green_metering;
-                        2: response_out <= blue_metering;
-                    endcase
-
-                    response_valid_out <= 1;
-                end
-
-            endcase
-
-        end
-
-        else begin
-            response_valid_out <= 0;
-        end
-
-    end
-
-end
-
-// Capture command logic
-logic [1:0] cropped_frame_valid_edge_monitor;
-logic cropped_frame_valid;
-
-always_ff @(posedge clock_spi_in) begin
-    if (reset_spi_n_in == 0) begin
-        capture_in_progress_flag <= 0;
-        cropped_frame_valid_edge_monitor <= 0;
-    end
-
-    else begin
-        cropped_frame_valid_edge_monitor <= {cropped_frame_valid_edge_monitor[0],
-                                             cropped_frame_valid};
-
-        if (capture_flag && cropped_frame_valid_edge_monitor == 'b01) begin
-            capture_in_progress_flag <= 1;
-        end
-
-        if (cropped_frame_valid_edge_monitor == 'b10) begin
-            capture_in_progress_flag <= 0;
-        end
+        start_capture_pixel_domain <= start_capture_metastable;
+        quality_factor_pixel_domain <= quality_factor_metastable;
     end
 end
+
+logic [9:0] byte_to_pixel_data;
+logic byte_to_pixel_line_valid;
+logic byte_to_pixel_frame_valid;
 
 `ifdef RADIANT
-
 logic mipi_byte_clock;
 logic mipi_byte_reset_n;
 
@@ -182,7 +132,7 @@ logic mipi_lp_av_enable /* synthesis syn_keep=1 nomerge=""*/;
 logic [15:0] mipi_word_count /* synthesis syn_keep=1 nomerge=""*/;
 logic [5:0] mipi_datatype;
 
-reset_sync reset_sync_clock_byte (
+reset_sync mipi_byte_clock_reset_sync (
     .clock_in(mipi_byte_clock),
     .async_reset_n_in(global_reset_n_in),
     .sync_reset_n_out(mipi_byte_reset_n)
@@ -211,7 +161,6 @@ csi2_receiver_ip csi2_receiver_ip (
 );
 
 always @(posedge mipi_byte_clock or negedge mipi_byte_reset_n) begin
-
     if (!mipi_byte_reset_n) begin
         mipi_payload_enable <= 0;
         mipi_payload <= 0;
@@ -225,12 +174,7 @@ always @(posedge mipi_byte_clock or negedge mipi_byte_reset_n) begin
         mipi_sp_enable <= mipi_sp_enable_metastable;
         mipi_lp_av_enable <= mipi_lp_av_enable_metastable;
     end
-
 end
-
-logic byte_to_pixel_frame_valid /* synthesis syn_keep=1 nomerge=""*/;
-logic byte_to_pixel_line_valid /* synthesis syn_keep=1 nomerge=""*/;
-logic [9:0] byte_to_pixel_data /* synthesis syn_keep=1 nomerge=""*/;
 
 byte_to_pixel_ip byte_to_pixel_ip (
     .reset_byte_n_i(mipi_byte_reset_n),
@@ -241,11 +185,54 @@ byte_to_pixel_ip byte_to_pixel_ip (
     .payload_en_i(mipi_payload_enable),
     .payload_i(mipi_payload),
     .wc_i(mipi_word_count),
-    .reset_pixel_n_i(reset_pixel_n_in),
-    .clk_pixel_i(clock_pixel_in),
+    .reset_pixel_n_i(pixel_reset_n_in),
+    .clk_pixel_i(pixel_clock_in),
     .fv_o(byte_to_pixel_frame_valid),
     .lv_o(byte_to_pixel_line_valid),
     .pd_o(byte_to_pixel_data)
+);
+`endif // RADIANT
+
+`ifdef TESTBENCH // TESTBENCH
+image_gen image_gen (
+    .clock_in(pixel_clock_in),
+    .reset_n_in(pixel_reset_n_in),
+
+    .bayer_data_out(byte_to_pixel_data),
+    .line_valid_out(byte_to_pixel_line_valid),
+    .frame_valid_out(byte_to_pixel_frame_valid)
+);
+`endif // TESTBENCH
+
+logic [9:0] panned_data;
+logic panned_line_valid;
+logic panned_frame_valid;
+
+crop pan_crop (
+    .clock_in(pixel_clock_in),
+    .reset_n_in(pixel_reset_n_in),
+
+    .red_data_in(byte_to_pixel_data),
+    .green_data_in(0),
+    .blue_data_in(0),
+    .line_valid_in(byte_to_pixel_line_valid),
+    .frame_valid_in(byte_to_pixel_frame_valid),
+
+    `ifdef TESTBENCH
+    .x_crop_start(10),
+    .x_crop_end(25),
+    .y_crop_start(12),
+    .y_crop_end(24),
+    `else
+    .x_crop_start(284), // TODO make dynamic
+    .x_crop_end(1004),  // TODO make dynamic
+    .y_crop_start(4),
+    .y_crop_end(724),
+    `endif
+
+    .red_data_out(panned_data),
+    .line_valid_out(panned_line_valid),
+    .frame_valid_out(panned_frame_valid)
 );
 
 logic [9:0] debayered_red_data;
@@ -255,119 +242,139 @@ logic debayered_line_valid;
 logic debayered_frame_valid;
 
 debayer debayer (
-    .pixel_clock_in(clock_pixel_in),
-    .reset_n_in(reset_pixel_n_in),
+    .clock_in(pixel_clock_in),
+    .reset_n_in(pixel_reset_n_in),
 
-    .pixel_data_in(byte_to_pixel_data),
-    .line_valid_in(byte_to_pixel_line_valid),
-    .frame_valid_in(byte_to_pixel_frame_valid),
+    .bayer_data_in(panned_data),
+    .line_valid_in(panned_line_valid),
+    .frame_valid_in(panned_frame_valid),
 
-    .pixel_red_data_out(debayered_red_data),
-    .pixel_green_data_out(debayered_green_data),
-    .pixel_blue_data_out(debayered_blue_data),
+    .red_data_out(debayered_red_data),
+    .green_data_out(debayered_green_data),
+    .blue_data_out(debayered_blue_data),
     .line_valid_out(debayered_line_valid),
     .frame_valid_out(debayered_frame_valid)
 );
 
+logic [7:0] red_metering_pixel_clock_domain;
+logic [7:0] green_metering_pixel_clock_domain;
+logic [7:0] blue_metering_pixel_clock_domain;
+
+logic [7:0] red_metering_metastable;
+logic [7:0] green_metering_metastable;
+logic [7:0] blue_metering_metastable;
+
 metering metering (
-    .pixel_clock_in(clock_pixel_in),
-    .reset_n_in(reset_pixel_n_in),
+    .clock_in(pixel_clock_in),
+    .reset_n_in(pixel_reset_n_in),
 
-    .pixel_red_data_in(debayered_red_data),
-    .pixel_green_data_in(debayered_green_data),
-    .pixel_blue_data_in(debayered_blue_data),
+    .red_data_in(debayered_red_data),
+    .green_data_in(debayered_green_data),
+    .blue_data_in(debayered_blue_data),
     .line_valid_in(debayered_line_valid),
     .frame_valid_in(debayered_frame_valid),
 
-    .red_metering_out(red_metering),
-    .green_metering_out(green_metering),
-    .blue_metering_out(blue_metering)
+    .red_metering_out(red_metering_pixel_clock_domain),
+    .green_metering_out(green_metering_pixel_clock_domain),
+    .blue_metering_out(blue_metering_pixel_clock_domain)
 );
 
-logic [9:0] cropped_red_data;
-logic [9:0] cropped_green_data;
-logic [9:0] cropped_blue_data;
-logic cropped_line_valid;
+always @(posedge spi_clock_in) begin
+    if (spi_reset_n_in == 0) begin
+        red_metering_metastable <= 0;
+        green_metering_metastable <= 0;
+        blue_metering_metastable <= 0;
 
-crop #(
-    .X_CROP_START(542),
-    .X_CROP_END(742),
-    .Y_CROP_START(260),
-    .Y_CROP_END(460)
-) crop (
-    .pixel_clock_in(clock_pixel_in),
-    .reset_n_in(reset_pixel_n_in),
-
-    .pixel_red_data_in(debayered_red_data),
-    .pixel_green_data_in(debayered_green_data),
-    .pixel_blue_data_in(debayered_blue_data),
-    .line_valid_in(debayered_line_valid),
-    .frame_valid_in(debayered_frame_valid),
-
-    .pixel_red_data_out(cropped_red_data),
-    .pixel_green_data_out(cropped_green_data),
-    .pixel_blue_data_out(cropped_blue_data),
-    .line_valid_out(cropped_line_valid),
-    .frame_valid_out(cropped_frame_valid)
-);
-
-logic [15:0] buffer_write_address_metastable;
-logic [15:0] buffer_address;
-always_ff @(posedge clock_pixel_in) begin
-
-    if (cropped_frame_valid == 0) begin
-        buffer_write_address_metastable <= 0;
-    end
-    else if (cropped_frame_valid && cropped_line_valid) begin
-        buffer_write_address_metastable <= buffer_write_address_metastable + 1;
-    end
-
-end
-
-logic [7:0] buffer_write_data_metastable;
-logic [7:0] buffer_write_data;
-assign buffer_write_data_metastable = {cropped_red_data[9:7], 
-                                       cropped_green_data[9:7], 
-                                       cropped_blue_data[9:8]};
-
-logic buffer_write_enable_metastable;
-logic buffer_write_enable;
-assign buffer_write_enable_metastable = cropped_frame_valid && 
-                                        cropped_line_valid && 
-                                        capture_in_progress_flag;
-
-always_ff @(posedge clock_spi_in) begin
-    
-    if (reset_spi_n_in == 0) begin
-        buffer_address <= 0;
-        buffer_write_data <= 0;
-        buffer_write_enable <= 0;
+        red_metering_spi_clock_domain <= 0;
+        green_metering_spi_clock_domain <= 0;
+        blue_metering_spi_clock_domain <= 0;
     end
 
     else begin
-        if (buffer_write_enable_metastable) begin
-            buffer_address <= buffer_write_address_metastable;
-            buffer_write_data <= buffer_write_data_metastable;  
-        end
-        else begin
-            buffer_address <= buffer_read_address;
-            buffer_write_data <= 0;
-        end
+        red_metering_metastable <= red_metering_pixel_clock_domain;
+        green_metering_metastable <= green_metering_pixel_clock_domain;
+        blue_metering_metastable <= blue_metering_pixel_clock_domain;
 
-        buffer_write_enable <= buffer_write_enable_metastable;
+        red_metering_spi_clock_domain <= red_metering_metastable;
+        green_metering_spi_clock_domain <= green_metering_metastable;
+        blue_metering_spi_clock_domain <= blue_metering_metastable;
     end
 end
 
-image_buffer image_buffer (
-    .clock_in(clock_spi_in),
-    .reset_n_in(reset_spi_n_in),
-    .write_address_in(buffer_address),
-    .read_address_in(buffer_address),
-    .write_data_in(buffer_write_data),
-    .read_data_out(buffer_read_data),
-    .write_enable_in(buffer_write_enable)
+logic [9:0] zoomed_red_data;
+logic [9:0] zoomed_green_data;
+logic [9:0] zoomed_blue_data;
+logic zoomed_line_valid;
+logic zoomed_frame_valid;
+
+crop zoom_crop (
+    .clock_in(pixel_clock_in),
+    .reset_n_in(pixel_reset_n_in),
+
+    .red_data_in(debayered_red_data),
+    .green_data_in(debayered_green_data),
+    .blue_data_in(debayered_blue_data),
+    .line_valid_in(debayered_line_valid),
+    .frame_valid_in(debayered_frame_valid),
+
+    `ifdef TESTBENCH
+    .x_crop_start(0),
+    .x_crop_end(15),
+    .y_crop_start(0),
+    .y_crop_end(12),
+    `else
+    .x_crop_start(260), // TODO make dynamic
+    .x_crop_end(460),   // TODO make dynamic
+    .y_crop_start(260), // TODO make dynamic
+    .y_crop_end(460),   // TODO make dynamic
+    `endif
+
+    .red_data_out(zoomed_red_data),
+    .green_data_out(zoomed_green_data),
+    .blue_data_out(zoomed_blue_data),
+    .line_valid_out(zoomed_line_valid),
+    .frame_valid_out(zoomed_frame_valid)
 );
 
-`endif
+logic [127:0] final_image_data;
+logic [15:0] final_image_address;
+logic final_image_data_valid;
+logic final_image_complete;
+
+jpeg jpeg (
+    .pixel_clock_in(pixel_clock_in),
+    .pixel_reset_n_in(pixel_reset_n_in),
+
+    .jpeg_buffer_clock_in(jpeg_buffer_clock_in),
+    .jpeg_buffer_reset_n_in(jpeg_buffer_reset_n_in),
+
+    .red_data_in(zoomed_red_data),
+    .green_data_in(zoomed_green_data),
+    .blue_data_in(zoomed_blue_data),
+    .line_valid_in(zoomed_line_valid),
+    .frame_valid_in(zoomed_frame_valid),
+
+    .start_capture_in(start_capture_pixel_domain),
+    .x_size_in(200), // TODO
+    .y_size_in(200),
+    .quality_factor_in(quality_factor_pixel_domain),
+
+    .data_out(final_image_data),
+    .data_valid_out(final_image_data_valid), // TODO
+    .address_out(final_image_address),
+    .image_valid_out(final_image_complete)
+);
+
+image_buffer image_buffer (
+    .write_clock_in(pixel_clock_in),
+    .read_clock_in(spi_clock_in),
+    .write_reset_n_in(pixel_reset_n_in),
+    .read_reset_n_in(spi_reset_n_in),
+    .write_address_in(final_image_address),
+    .read_address_in(image_buffer_address),
+    .write_data_in(final_image_data[7:0]),
+    .read_data_out(image_buffer_data),
+    .write_read_n_in(final_image_data_valid)
+);
 
 endmodule

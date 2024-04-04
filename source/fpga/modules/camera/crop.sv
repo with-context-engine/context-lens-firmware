@@ -1,32 +1,32 @@
-module crop #(
-    X_CROP_START = 10,
-    X_CROP_END = 25,
-    Y_CROP_START = 12,
-    Y_CROP_END = 24
-)(
-    input logic pixel_clock_in,
+module crop (
+    input logic clock_in,
     input logic reset_n_in,
 
-    input logic [9:0] pixel_red_data_in,
-    input logic [9:0] pixel_green_data_in,
-    input logic [9:0] pixel_blue_data_in,
+    input logic [9:0] red_data_in,
+    input logic [9:0] green_data_in,
+    input logic [9:0] blue_data_in,
     input logic line_valid_in,
     input logic frame_valid_in,
 
-    output logic [9:0] pixel_red_data_out,
-    output logic [9:0] pixel_green_data_out,
-    output logic [9:0] pixel_blue_data_out,
+    input logic [10:0] x_crop_start,
+    input logic [10:0] x_crop_end,
+    input logic [10:0] y_crop_start,
+    input logic [10:0] y_crop_end,
+
+    output logic [9:0] red_data_out,
+    output logic [9:0] green_data_out,
+    output logic [9:0] blue_data_out,
     output logic line_valid_out,
     output logic frame_valid_out
 );
 
 // Allows max 2048 x 2048 pixel input
-logic [11:0] x_counter;
-logic [11:0] y_counter;
+logic [10:0] x_counter;
+logic [10:0] y_counter;
 
 logic previous_line_valid;
 
-always_ff @(posedge pixel_clock_in) begin
+always_ff @(posedge clock_in) begin
 
     if(reset_n_in == 0 || frame_valid_in == 0) begin
 
@@ -59,24 +59,24 @@ always_ff @(posedge pixel_clock_in) begin
 
         // Output cropped version
         if(line_valid_in &&
-           x_counter >= X_CROP_START &&
-           x_counter < X_CROP_END &&
-           y_counter >= Y_CROP_START &&
-           y_counter < Y_CROP_END) begin
+           x_counter >= x_crop_start &&
+           x_counter < x_crop_end &&
+           y_counter >= y_crop_start &&
+           y_counter < y_crop_end) begin
 
             line_valid_out <= 1;
-            pixel_red_data_out <= pixel_red_data_in;
-            pixel_green_data_out <= pixel_green_data_in;
-            pixel_blue_data_out <= pixel_blue_data_in;
+            red_data_out <= red_data_in;
+            green_data_out <= green_data_in;
+            blue_data_out <= blue_data_in;
 
         end
 
         else begin
             
             line_valid_out <= 0;
-            pixel_red_data_out <= 0;
-            pixel_green_data_out <= 0;
-            pixel_blue_data_out <= 0;
+            red_data_out <= 0;
+            green_data_out <= 0;
+            blue_data_out <= 0;
 
         end
 

@@ -22,20 +22,21 @@
 # PERFORMANCE OF THIS SOFTWARE.
 #
 
-spi:
+camera:
 	@mkdir -p simulation
 	
 	@iverilog -Wall \
 			  -g2012 \
 			  -I ../../.. \
-			  -o simulation/spi_tb.out \
-			  -i spi_tb.sv
+			  -D TESTBENCH=1 \
+			  -o simulation/camera_tb.out \
+			  -i camera/camera_tb.sv
 	exit
-	@vvp simulation/spi_tb.out \
+	@vvp simulation/camera_tb.out \
 		 -fst
 
-	@gtkwave simulation/spi_tb.fst \
-			 spi_tb.gtkw
+	@gtkwave simulation/camera_tb.fst \
+			 camera/camera_tb.gtkw
 
 debayer:
 	@mkdir -p simulation
@@ -44,14 +45,31 @@ debayer:
 			  -g2012 \
 			  -I ../../.. \
 			  -o simulation/debayer_tb.out \
-			  -i debayer_tb.sv
+			  -i debayer/debayer_tb.sv
 	exit
 	@vvp simulation/debayer_tb.out \
 		 -fst
 
 	@gtkwave simulation/debayer_tb.fst \
-			 debayer_tb.gtkw
+			 debayer/debayer_tb.gtkw
+
+image_buffer:
+	@mkdir -p simulation
+	
+	@iverilog -Wall \
+			  -g2012 \
+			  -I ../../.. \
+			  -o simulation/image_buffer_tb.out \
+			  -i image_buffer/image_buffer_tb.sv
+	exit
+	@vvp simulation/image_buffer_tb.out \
+		 -fst
+
+	@gtkwave simulation/image_buffer_tb.fst \
+			 image_buffer/image_buffer_tb.gtkw
 
 clean:
 	@rm -rf simulation
 	@echo Cleaned
+
+.PHONY: camera csi debayer image_buffer spi clean
